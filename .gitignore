@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+/data/
+/output/
+/outputs/
+requirements.txt
+week1_assignment.ipynb
+answer.txt
+/temp/ 
