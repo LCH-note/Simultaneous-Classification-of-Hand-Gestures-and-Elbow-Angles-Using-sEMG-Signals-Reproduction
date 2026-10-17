@@ -2,10 +2,15 @@
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
-/data/
+# Ignore generated data by default, but keep the project evidence files.
+/data/*
+!/data/dataset.npz
+!/data/data_pre/
+/data/data_pre/*
+!/data/data_pre/*_pre_report.json
 /output/
 /outputs/
 requirements.txt
 week1_assignment.ipynb
 answer.txt
-/temp/ 
+/tmp/
