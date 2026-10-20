@@ -1,15 +1,9 @@
-"""시간축 정렬이 끝난 sEMG 데이터에서 25차원 특징 데이터셋을 만든다.
-
-겹치는 윈도우가 학습셋과 테스트셋에 나뉘어 들어가지 않도록 시행을 먼저
-층화 분할한다. 이후 각 집합 안에서 필터링, 세그먼트 추출, 윈도우 분할,
-시간영역 특징 추출을 순서대로 수행한다.
-"""
+"""파일별 시행을 먼저 분할한 뒤 시행 단위 특징 데이터셋을 만든다."""
 
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 try:
@@ -31,108 +25,151 @@ except ImportError:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-INPUT_DIR = PROJECT_ROOT / 'data' / 'data_pre'
-OUTPUT_PATH = PROJECT_ROOT / 'data' / 'dataset.npz'
+INPUT_DIR = PROJECT_ROOT / "data" / "data"
+OUTPUT_PATH = PROJECT_ROOT / "data" / "dataset_improve.npz"
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
 
-def label_of(path):
-    """정렬 파일명에서 각도와 동작으로 구성된 클래스명을 반환한다."""
-    stem = Path(path).stem.removesuffix('_pre')
-    return stem.split('_', 1)[1]
+def metadata_of(path):
+    """파일명에서 피험자와 각도·동작 라벨을 반환한다."""
+    stem = Path(path).stem.removesuffix("_pre")
+    subject, label = stem.split("_", 1)
+    return subject, label
 
 
-def collect_trials(files):
-    """정렬 CSV의 모든 시행을 ``(경로, 시작점, 번호, 라벨)``로 수집한다."""
-    trials = []
+def split_trials_by_file(files):
+    """각 파일의 시행 30개를 먼저 8:2로 분할한다."""
+    rng = np.random.default_rng(RANDOM_STATE)
+    train_trials = []
+    test_trials = []
+
     for path in files:
         marks = np.loadtxt(
             path,
-            delimiter=',',
+            delimiter=",",
             skiprows=1,
             usecols=7,
         )
         starts = np.flatnonzero(marks == 1)
-        label = label_of(path)
-        for trial_number, start in enumerate(starts, start=1):
-            trials.append((str(path), int(start), trial_number, label))
-    return trials
+        trial_indices = np.arange(len(starts))
+        rng.shuffle(trial_indices)
+
+        test_count = round(len(starts) * TEST_SIZE)
+        test_indices = set(trial_indices[:test_count])
+        subject, label = metadata_of(path)
+
+        for trial_index, start in enumerate(starts):
+            trial = (
+                str(path),
+                int(start),
+                trial_index + 1,
+                subject,
+                label,
+            )
+            if trial_index in test_indices:
+                test_trials.append(trial)
+            else:
+                train_trials.append(trial)
+
+    return train_trials, test_trials
 
 
 def build(trials):
-    """한 집합에 속한 시행에서 윈도우별 25차원 특징과 라벨을 만든다."""
+    """각 시행을 19개 윈도우의 25차원 특징으로 변환한다."""
     trials_by_file = defaultdict(list)
-    for path, start, trial_number, label in trials:
-        trials_by_file[path].append((start, trial_number, label))
+    for trial in trials:
+        trials_by_file[trial[0]].append(trial[1:])
 
     features = []
     labels = []
+    subjects = []
+    trial_ids = []
+
     for path, file_trials in trials_by_file.items():
         signals = np.loadtxt(
             path,
-            delimiter=',',
+            delimiter=",",
             skiprows=1,
             usecols=range(5),
         )
-        for start, _, label in file_trials:
+        file_id = Path(path).stem.removesuffix("_pre")
+
+        for start, trial_number, subject, label in file_trials:
             trial = signals[start:start + TRIAL_SAMPLES]
             segment = cut(preprocess(trial))
-            for window in make_windows(segment):
-                features.append(td_features(window))
-                labels.append(label)
+            trial_features = [
+                td_features(window)
+                for window in make_windows(segment)
+            ]
 
-    return np.stack(features), np.asarray(labels)
+            features.append(np.stack(trial_features))
+            labels.append(label)
+            subjects.append(subject)
+            trial_ids.append(f"{file_id}_{trial_number:02d}")
+
+    return (
+        np.stack(features),
+        np.asarray(labels),
+        np.asarray(subjects),
+        np.asarray(trial_ids),
+    )
+
+
+def scale_features(Xtr, Xte):
+    """학습 윈도우로만 표준화 통계를 계산한다."""
+    feature_count = Xtr.shape[-1]
+    scaler = StandardScaler()
+    Xtr_scaled = scaler.fit_transform(Xtr.reshape(-1, feature_count))
+    Xte_scaled = scaler.transform(Xte.reshape(-1, feature_count))
+    return (
+        Xtr_scaled.reshape(Xtr.shape),
+        Xte_scaled.reshape(Xte.shape),
+        scaler,
+    )
 
 
 def print_distribution(name, labels):
-    """데이터셋의 클래스별 윈도우 수를 출력한다."""
-    distribution = Counter(labels)
-    print(f'{name} 클래스 분포:')
-    for label in sorted(distribution):
-        print(f'  {label}: {distribution[label]}')
+    """시행 단위 클래스 분포를 출력한다."""
+    print(f"{name} 클래스 분포:")
+    for label, count in sorted(Counter(labels).items()):
+        print(f"  {label}: {count}")
 
 
 def main():
-    files = sorted(INPUT_DIR.glob('*_pre.csv'))
-    trials = collect_trials(files)
-    trial_labels = [trial[3] for trial in trials]
+    files = sorted(INPUT_DIR.glob("*.csv"))
+    train_trials, test_trials = split_trials_by_file(files)
 
-    train_trials, test_trials = train_test_split(
-        trials,
-        test_size=TEST_SIZE,
-        stratify=trial_labels,
-        random_state=RANDOM_STATE,
-    )
-
-    Xtr, ytr = build(train_trials)
-    Xte, yte = build(test_trials)
-
-    scaler = StandardScaler()
-    Xtr_s = scaler.fit_transform(Xtr)
-    Xte_s = scaler.transform(Xte)
+    Xtr, ytr, subject_tr, trial_id_tr = build(train_trials)
+    Xte, yte, subject_te, trial_id_te = build(test_trials)
+    Xtr, Xte, scaler = scale_features(Xtr, Xte)
 
     np.savez(
         OUTPUT_PATH,
-        Xtr=Xtr_s,
+        Xtr=Xtr,
         ytr=ytr,
-        Xte=Xte_s,
+        Xte=Xte,
         yte=yte,
+        subject_tr=subject_tr,
+        subject_te=subject_te,
+        trial_id_tr=trial_id_tr,
+        trial_id_te=trial_id_te,
+        scaler_mean=scaler.mean_,
+        scaler_scale=scaler.scale_,
     )
 
-    print('정렬 CSV 파일 수:', len(files))
-    print('전체 시행 수:', len(trials))
-    print('학습 시행 수:', len(train_trials))
-    print('테스트 시행 수:', len(test_trials))
-    print('학습 데이터:', Xtr_s.shape, ytr.shape)
-    print('테스트 데이터:', Xte_s.shape, yte.shape)
-    print_distribution('학습', ytr)
-    print_distribution('테스트', yte)
-    print('학습셋 평균:', Xtr_s.mean(axis=0).round(6))
-    print('학습셋 표준편차:', Xtr_s.std(axis=0).round(6))
-    print('저장 파일:', OUTPUT_PATH)
-    print('저장 완료')
+    print("입력 CSV 파일 수:", len(files))
+    print("학습 시행 수:", len(train_trials))
+    print("테스트 시행 수:", len(test_trials))
+    print("학습 데이터:", Xtr.shape, ytr.shape)
+    print("테스트 데이터:", Xte.shape, yte.shape)
+    print_distribution("학습", ytr)
+    print_distribution("테스트", yte)
+    print("학습 특징 평균:", Xtr.mean(axis=(0, 1)).round(6))
+    print("학습 특징 표준편차:", Xtr.std(axis=(0, 1)).round(6))
+    print("저장 파일:", OUTPUT_PATH)
+    print("저장 완료")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
