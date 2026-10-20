@@ -1,6 +1,8 @@
 """세 모델의 시행 단위 5-fold 교차검증 결과를 저장한다."""
 
 import json
+import time
+from itertools import combinations
 from pathlib import Path
 
 import matplotlib
@@ -11,6 +13,7 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.svm import SVC
+from scipy.stats import ttest_rel
 from xgboost import XGBClassifier
 
 matplotlib.use("Agg")
@@ -23,9 +26,13 @@ OUTPUT_DIR = PROJECT_ROOT / "data" / "five fold"
 JSON_OUTPUT_PATH = OUTPUT_DIR / "five_fold_results.json"
 TEXT_OUTPUT_PATH = OUTPUT_DIR / "five_fold_results.txt"
 IMAGE_OUTPUT_PATH = OUTPUT_DIR / "five_fold_comparison.png"
+TTEST_IMAGE_OUTPUT_PATH = OUTPUT_DIR / "paired_ttest_comparison.png"
+TIMING_IMAGE_OUTPUT_PATH = OUTPUT_DIR / "model_timing_comparison.png"
 
 N_SPLITS = 5
 RANDOM_STATE = 42
+SIGNIFICANCE_LEVEL = 0.05
+INFERENCE_REPEATS = 100
 FIGURE_SIZE = (8, 5)
 FIGURE_DPI = 120
 
@@ -71,6 +78,15 @@ def load_dataset():
     label_encoder = LabelEncoder()
     y = label_encoder.fit_transform(labels)
     return X, y, label_encoder
+
+
+def load_holdout_dataset(label_encoder):
+    """실행시간 측정에 사용할 기존 hold-out 데이터를 불러온다."""
+    with np.load(DATASET_PATH, allow_pickle=True) as data:
+        Xtr = data["Xtr"]
+        ytr = label_encoder.transform(data["ytr"])
+        Xte = data["Xte"]
+    return Xtr, ytr, Xte
 
 
 def scale_fold(X_train, X_validation):
@@ -164,7 +180,71 @@ def summarize_results(fold_accuracy):
     }
 
 
-def save_json(results, class_names, sample_count):
+def run_paired_t_tests(fold_accuracy):
+    """모델 쌍의 fold 정확도에 대응표본 t-검정을 수행한다."""
+    test_results = []
+    for left, right in combinations(fold_accuracy, 2):
+        statistic, p_value = ttest_rel(
+            fold_accuracy[left],
+            fold_accuracy[right],
+        )
+        is_significant = bool(
+            np.isfinite(p_value) and p_value < SIGNIFICANCE_LEVEL
+        )
+        verdict = "유의함" if is_significant else "유의하지 않음"
+        test_results.append({
+            "comparison": f"{left} vs {right}",
+            "t_statistic": float(statistic),
+            "p_value": float(p_value),
+            "alpha": SIGNIFICANCE_LEVEL,
+            "significant": is_significant,
+            "verdict": verdict,
+        })
+    return test_results
+
+
+def measure_model_times(Xtr, ytr, Xte, models):
+    """모델별 학습 시간과 시행 1개의 평균 추론 시간을 측정한다."""
+    train_windows, train_labels = flatten_training_windows(Xtr, ytr)
+    sample = Xte[:1]
+    timing_results = {}
+
+    for name, prototype in models.items():
+        model = clone(prototype)
+        start = time.perf_counter()
+        model.fit(train_windows, train_labels)
+        training_seconds = time.perf_counter() - start
+
+        aggregate_trial_predictions(model, sample)
+        start = time.perf_counter()
+        for _ in range(INFERENCE_REPEATS):
+            aggregate_trial_predictions(model, sample)
+        inference_ms = (
+            (time.perf_counter() - start)
+            * 1000
+            / INFERENCE_REPEATS
+        )
+
+        timing_results[name] = {
+            "training_seconds": float(training_seconds),
+            "inference_ms_per_trial": float(inference_ms),
+            "inference_repeats": INFERENCE_REPEATS,
+        }
+        print(
+            f"{name}: 학습 {training_seconds:.3f}s, "
+            f"추론 {inference_ms:.3f} ms/trial"
+        )
+
+    return timing_results
+
+
+def save_json(
+    results,
+    class_names,
+    sample_count,
+    t_test_results,
+    timing_results,
+):
     """교차검증 설정과 결과를 JSON으로 저장한다."""
     payload = {
         "dataset": str(DATASET_PATH),
@@ -176,6 +256,8 @@ def save_json(results, class_names, sample_count):
         "random_state": RANDOM_STATE,
         "aggregation": "mean window probability or decision score",
         "models": results,
+        "paired_t_tests": t_test_results,
+        "timing": timing_results,
     }
     JSON_OUTPUT_PATH.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -183,7 +265,7 @@ def save_json(results, class_names, sample_count):
     )
 
 
-def save_text(results):
+def save_text(results, t_test_results, timing_results):
     """모델별 fold 결과를 읽기 쉬운 텍스트로 저장한다."""
     lines = [
         "5-fold 교차검증 결과",
@@ -203,6 +285,26 @@ def save_text(results):
             f"± {result['std_accuracy'] * 100:.2f}%"
         )
         lines.append("")
+
+    lines.extend(["대응표본 t-검정", f"유의수준: {SIGNIFICANCE_LEVEL}"])
+    for result in t_test_results:
+        lines.append(
+            f"{result['comparison']}: "
+            f"t = {result['t_statistic']:.4f}, "
+            f"p = {result['p_value']:.6f} "
+            f"({result['verdict']})"
+        )
+
+    lines.extend([
+        "",
+        "모델 실행시간",
+        f"추론 반복 횟수: {INFERENCE_REPEATS}",
+    ])
+    for name, result in timing_results.items():
+        lines.append(
+            f"{name}: 학습 {result['training_seconds']:.3f}s, "
+            f"추론 {result['inference_ms_per_trial']:.3f} ms/trial"
+        )
 
     TEXT_OUTPUT_PATH.write_text("\n".join(lines), encoding="utf-8")
 
@@ -251,16 +353,116 @@ def save_comparison_image(results):
     plt.close(figure)
 
 
+def save_ttest_image(t_test_results):
+    """모델 쌍별 p-value를 로그 스케일 막대그래프로 저장한다."""
+    names = [result["comparison"] for result in t_test_results]
+    p_values = [
+        max(result["p_value"], np.finfo(float).tiny)
+        for result in t_test_results
+    ]
+
+    figure, axis = plt.subplots(figsize=FIGURE_SIZE)
+    bars = axis.bar(
+        names,
+        p_values,
+        color=["#4C78A8", "#59A14F", "#F28E2B"],
+    )
+    axis.axhline(
+        SIGNIFICANCE_LEVEL,
+        color="red",
+        linestyle="--",
+        label=f"alpha = {SIGNIFICANCE_LEVEL}",
+    )
+    axis.set_yscale("log")
+    axis.set_ylabel("p-value (log scale)")
+    axis.set_title("Paired t-test of Fold Accuracies")
+    axis.legend()
+    axis.grid(axis="y", alpha=0.25)
+
+    for bar, p_value in zip(bars, p_values):
+        axis.text(
+            bar.get_x() + bar.get_width() / 2,
+            p_value,
+            f"p={p_value:.4g}",
+            ha="center",
+            va="bottom",
+        )
+
+    figure.tight_layout()
+    figure.savefig(
+        TTEST_IMAGE_OUTPUT_PATH,
+        dpi=FIGURE_DPI,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+
+def save_timing_image(timing_results):
+    """모델별 학습·추론 시간을 두 개의 그래프로 저장한다."""
+    names = list(timing_results)
+    training_seconds = [
+        timing_results[name]["training_seconds"]
+        for name in names
+    ]
+    inference_ms = [
+        timing_results[name]["inference_ms_per_trial"]
+        for name in names
+    ]
+
+    figure, axes = plt.subplots(1, 2, figsize=(11, 5))
+    colors = ["#4C78A8", "#59A14F", "#F28E2B"]
+    train_bars = axes[0].bar(names, training_seconds, color=colors)
+    inference_bars = axes[1].bar(names, inference_ms, color=colors)
+
+    axes[0].set_title("Training Time")
+    axes[0].set_ylabel("Seconds")
+    axes[1].set_title("Inference Time per Trial")
+    axes[1].set_ylabel("Milliseconds")
+
+    for axis, bars, values in (
+        (axes[0], train_bars, training_seconds),
+        (axes[1], inference_bars, inference_ms),
+    ):
+        axis.grid(axis="y", alpha=0.25)
+        for bar, value in zip(bars, values):
+            axis.text(
+                bar.get_x() + bar.get_width() / 2,
+                value,
+                f"{value:.3f}",
+                ha="center",
+                va="bottom",
+            )
+
+    figure.tight_layout()
+    figure.savefig(
+        TIMING_IMAGE_OUTPUT_PATH,
+        dpi=FIGURE_DPI,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     X, y, label_encoder = load_dataset()
     models = create_models()
     fold_accuracy = run_cross_validation(X, y, models)
     results = summarize_results(fold_accuracy)
+    t_test_results = run_paired_t_tests(fold_accuracy)
+    Xtr, ytr, Xte = load_holdout_dataset(label_encoder)
+    timing_results = measure_model_times(Xtr, ytr, Xte, models)
 
-    save_json(results, label_encoder.classes_, len(y))
-    save_text(results)
+    save_json(
+        results,
+        label_encoder.classes_,
+        len(y),
+        t_test_results,
+        timing_results,
+    )
+    save_text(results, t_test_results, timing_results)
     save_comparison_image(results)
+    save_ttest_image(t_test_results)
+    save_timing_image(timing_results)
 
     print("최종 결과:")
     for name, result in results.items():
@@ -268,9 +470,18 @@ def main():
             f"{name}: {result['mean_accuracy'] * 100:.2f} "
             f"± {result['std_accuracy'] * 100:.2f}%"
         )
+    print("대응표본 t-검정:")
+    for result in t_test_results:
+        print(
+            f"{result['comparison']}: "
+            f"p = {result['p_value']:.4f} "
+            f"({result['verdict']})"
+        )
     print("JSON 저장:", JSON_OUTPUT_PATH)
     print("텍스트 저장:", TEXT_OUTPUT_PATH)
-    print("이미지 저장:", IMAGE_OUTPUT_PATH)
+    print("정확도 이미지 저장:", IMAGE_OUTPUT_PATH)
+    print("t-검정 이미지 저장:", TTEST_IMAGE_OUTPUT_PATH)
+    print("실행시간 이미지 저장:", TIMING_IMAGE_OUTPUT_PATH)
 
 
 if __name__ == "__main__":

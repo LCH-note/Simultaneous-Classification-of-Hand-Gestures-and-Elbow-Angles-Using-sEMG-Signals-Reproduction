@@ -8,7 +8,13 @@ __pycache__/
 !/data/data_pre/
 /data/data_pre/*
 !/data/data_pre/*_pre_report.json
-/output/
+!/data/five fold/
+/data/five fold/*
+!/data/five fold/five_fold_comparison.png
+/output/*
+!/output/figures/
+/output/figures/*
+!/output/figures/confusion8_*.png
 /outputs/
 requirements.txt
 week1_assignment.ipynb
