@@ -7,14 +7,25 @@ __pycache__/
 !/data/dataset.npz
 !/data/data_pre/
 /data/data_pre/*
-!/data/data_pre/*_pre_report.json
+/data/data_pre_report/*
+!/data/data_pre_report/*_pre_report.json
 !/data/five fold/
 /data/five fold/*
-!/data/five fold/five_fold_comparison.png
+!/data/five fold/no_time_axis/
+!/data/five fold/time_axis/
+/data/five fold/no_time_axis/*
+/data/five fold/time_axis/*
+!/data/five fold/no_time_axis/*.png
+!/data/five fold/time_axis/*.png
 /output/*
 !/output/figures/
 /output/figures/*
-!/output/figures/confusion8_*.png
+!/output/figures/no_time_axis/
+!/output/figures/time_axis/
+/output/figures/no_time_axis/*
+/output/figures/time_axis/*
+!/output/figures/no_time_axis/confusion8_*.png
+!/output/figures/time_axis/confusion8_*.png
 /outputs/
 requirements.txt
 week1_assignment.ipynb

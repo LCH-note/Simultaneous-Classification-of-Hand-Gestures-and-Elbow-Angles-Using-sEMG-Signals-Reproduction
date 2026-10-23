@@ -25,8 +25,8 @@ except ImportError:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-INPUT_DIR = PROJECT_ROOT / "data" / "data"
-OUTPUT_PATH = PROJECT_ROOT / "data" / "dataset_improve.npz"
+INPUT_DIR = PROJECT_ROOT / "data" / "data_pre"
+OUTPUT_PATH = PROJECT_ROOT / "data" / "dataset_improve_time_axis.npz"
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
