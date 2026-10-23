@@ -19,6 +19,16 @@ __pycache__/
 !/data/five fold/no_time_axis/*.png
 !/data/five fold/time_axis/*.png
 
+# LOSO 결과 이미지 (데이터셋과 수치 결과는 제외)
+!/data/loso/
+/data/loso/*
+!/data/loso/no_time_axis/
+!/data/loso/time_axis/
+/data/loso/no_time_axis/*
+/data/loso/time_axis/*
+!/data/loso/no_time_axis/*.png
+!/data/loso/time_axis/*.png
+
 # 분석 출력 (혼동 행렬 이미지만 추적)
 /output/*
 !/output/figures/
