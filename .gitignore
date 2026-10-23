@@ -1,8 +1,9 @@
+# Python 가상 환경 및 캐시
 .venv/
 __pycache__/
 *.py[cod]
-.ipynb_checkpoints/
-# Ignore generated data by default, but keep the project evidence files.
+
+# 생성 데이터 (검증에 필요한 결과 파일만 추적)
 /data/*
 !/data/dataset.npz
 !/data/data_pre/
@@ -17,6 +18,8 @@ __pycache__/
 /data/five fold/time_axis/*
 !/data/five fold/no_time_axis/*.png
 !/data/five fold/time_axis/*.png
+
+# 분석 출력 (혼동 행렬 이미지만 추적)
 /output/*
 !/output/figures/
 /output/figures/*
@@ -26,8 +29,14 @@ __pycache__/
 /output/figures/time_axis/*
 !/output/figures/no_time_axis/confusion8_*.png
 !/output/figures/time_axis/confusion8_*.png
+
+# 추가 생성 결과
 /outputs/
-requirements.txt
-week1_assignment.ipynb
-answer.txt
+
+# 로컬 작업 문서
+/requirements.txt
+/answer.txt
+/machine_learning_accuracy_analysis.txt
+
+# 임시 작업 파일
 /tmp/
